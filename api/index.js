@@ -1,362 +1,220 @@
-// api/freefire.js
+const express = require("express");
+const puppeteer = require("puppeteer");
 
-const https = require("https");
+const app = express();
+const PORT = 3000;
 
-function cleanText(value = "") {
-  return value
-    .replace(/<[^>]*>/g, "")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) =>
-      String.fromCodePoint(parseInt(hex, 16))
-    )
-    .replace(/&#([0-9]+);/g, (_, dec) =>
-      String.fromCodePoint(parseInt(dec, 10))
-    )
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .trim();
-}
+let browser = null;
 
-function decodeUrl(value = "") {
-  try {
-    return value
-      .replace(/&amp;/gi, "&")
-      .replace(/&#x([0-9a-f]+);/gi, (_, hex) =>
-        String.fromCodePoint(parseInt(hex, 16))
-      )
-      .replace(/&#([0-9]+);/g, (_, dec) =>
-        String.fromCodePoint(parseInt(dec, 10))
-      );
-  } catch {
-    return value;
-  }
-}
-
-function getNumber(value) {
-  if (!value) return null;
-
-  const number = String(value)
-    .replace(/\./g, "")
-    .replace(/[^\d]/g, "");
-
-  return number ? Number(number) : null;
-}
-
-function extractProfile(html) {
-  /*
-   * =========================
-   * NICK
-   * =========================
-   */
-
-  let nick = null;
-
-  const nickMatch = html.match(
-    /<div\s+class=["']ffp-side-profile["'][\s\S]*?<strong[^>]*>([\s\S]*?)<\/strong>/i
-  );
-
-  if (nickMatch) {
-    nick = cleanText(nickMatch[1]);
-  }
-
-  /*
-   * =========================
-   * AVATAR
-   * =========================
-   */
-
-  let avatar = null;
-
-  const avatarMatch = html.match(
-    /<div\s+class=["']ffp-side-profile["'][\s\S]*?<img[^>]+src=["']([^"']+)["']/i
-  );
-
-  if (avatarMatch) {
-    avatar = decodeUrl(avatarMatch[1]);
-  }
-
-  /*
-   * =========================
-   * LEVEL
-   * =========================
-   */
-
-  let level = null;
-
-  const levelMatch = html.match(
-    /<div\s+class=["']ffp-side-profile["'][\s\S]*?<span>\s*BR\s*·\s*N[íi]vel\s*(\d+)\s*<\/span>/i
-  );
-
-  if (levelMatch) {
-    level = Number(levelMatch[1]);
-  }
-
-  /*
-   * =========================
-   * LIKES
-   * =========================
-   */
-
-  let like = null;
-
-  const likeMatch = html.match(
-    /<dt>\s*Likes\s*<\/dt>\s*<dd>\s*([\d.,]+)\s*<\/dd>/i
-  );
-
-  if (likeMatch) {
-    like = getNumber(likeMatch[1]);
-  }
-
-  /*
-   * =========================
-   * SKIN
-   * =========================
-   *
-   * Procura por uma imagem de skin
-   * dentro das seções do perfil.
-   */
-
-  let skin = null;
-
-  const skinPatterns = [
-    /class=["'][^"']*skin[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)["']/i,
-
-    /class=["'][^"']*ffp[^"']*item[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)["']/i,
-
-    /class=["'][^"']*ffp[^"']*skin[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)["']/i
-  ];
-
-  for (const pattern of skinPatterns) {
-    const match = html.match(pattern);
-
-    if (match) {
-      skin = decodeUrl(match[1]);
-      break;
+async function getBrowser() {
+    if (!browser) {
+        browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
+        });
     }
-  }
 
-  /*
-   * =========================
-   * RESULTADO
-   * =========================
-   */
-
-  return {
-    nick,
-    avatar,
-    skin,
-    like,
-    level
-  };
+    return browser;
 }
 
+app.get("/", async (req, res) => {
+    const id = String(req.query.id || "").trim();
 
-/*
- * =========================================
- * FETCH
- * =========================================
- */
+    if (!id) {
+        return res.status(400).json({
+            sucesso: false,
+            erro: "Informe o ID do jogador. Exemplo: /?id=8053399383"
+        });
+    }
 
-function fetchHTML(url, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const request = https.get(
-      url,
-      {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
+    if (!/^\d+$/.test(id)) {
+        return res.status(400).json({
+            sucesso: false,
+            erro: "O ID deve conter apenas números."
+        });
+    }
 
-          "Accept":
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    let page = null;
 
-          "Accept-Language":
-            "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    try {
+        const browser = await getBrowser();
 
-          ...headers
+        page = await browser.newPage();
+
+        await page.setViewport({
+            width: 1366,
+            height: 768
+        });
+
+        await page.setUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/153.0.0.0 Safari/537.36"
+        );
+
+        await page.goto("https://recargajogo.com.br/", {
+            waitUntil: "networkidle2",
+            timeout: 60000
+        });
+
+        // Procura pelo input através do placeholder,
+        // pois o ID ":r2a:" pode mudar a cada carregamento.
+        const inputSelector =
+            'input[placeholder="Insira o ID de jogador aqui"]';
+
+        await page.waitForSelector(inputSelector, {
+            visible: true,
+            timeout: 30000
+        });
+
+        // Limpa o campo
+        await page.click(inputSelector);
+
+        await page.evaluate((selector) => {
+            const input = document.querySelector(selector);
+
+            if (input) {
+                input.value = "";
+                input.dispatchEvent(new Event("input", {
+                    bubbles: true
+                }));
+            }
+        }, inputSelector);
+
+        // Digita o ID
+        await page.type(inputSelector, id, {
+            delay: 50
+        });
+
+        // Dá um pequeno tempo para o site processar a digitação
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        /*
+         * O site pode consultar automaticamente depois que o ID
+         * é digitado. Também procuramos por um botão de consulta
+         * caso exista.
+         */
+        const botoes = await page.$$("button");
+
+        for (const botao of botoes) {
+            try {
+                const texto = await page.evaluate(
+                    el => el.innerText || el.textContent || "",
+                    botao
+                );
+
+                const textoNormalizado = texto
+                    .trim()
+                    .toLowerCase();
+
+                if (
+                    textoNormalizado.includes("consultar") ||
+                    textoNormalizado.includes("pesquisar") ||
+                    textoNormalizado.includes("buscar") ||
+                    textoNormalizado.includes("continuar")
+                ) {
+                    await botao.click();
+                    break;
+                }
+            } catch (e) {
+                // Ignora botão que não puder ser lido
+            }
         }
-      },
-      response => {
-        let data = "";
 
-        response.setEncoding("utf8");
+        /*
+         * Espera aparecer o texto "Usuário:".
+         */
+        await page.waitForFunction(
+            () => {
+                return document.body.innerText.includes("Usuário:");
+            },
+            {
+                timeout: 30000
+            }
+        );
 
-        response.on("data", chunk => {
-          data += chunk;
+        // Extrai os dados da página
+        const resultado = await page.evaluate(() => {
+            const elementos = Array.from(
+                document.querySelectorAll("div")
+            );
+
+            let usuario = null;
+            let idJogador = null;
+
+            for (const elemento of elementos) {
+                const texto = (elemento.innerText || "").trim();
+
+                if (texto.startsWith("Usuário:")) {
+                    usuario = texto
+                        .replace(/^Usuário:\s*/i, "")
+                        .trim();
+                }
+
+                if (texto.startsWith("ID do jogador:")) {
+                    idJogador = texto
+                        .replace(/^ID do jogador:\s*/i, "")
+                        .trim();
+                }
+            }
+
+            return {
+                usuario,
+                idJogador
+            };
         });
 
-        response.on("end", () => {
-          resolve({
-            status: response.statusCode,
-            headers: response.headers,
-            body: data
-          });
+        if (!resultado.usuario && !resultado.idJogador) {
+            return res.status(404).json({
+                sucesso: false,
+                erro: "Não foi possível encontrar os dados do jogador.",
+                id_consultado: id
+            });
+        }
+
+        return res.json({
+            sucesso: true,
+            id_consultado: id,
+            usuario: resultado.usuario,
+            id_jogador: resultado.idJogador
         });
-      }
-    );
 
-    request.on("error", reject);
+    } catch (error) {
+        console.error("Erro:", error);
 
-    request.setTimeout(20000, () => {
-      request.destroy();
-      reject(new Error("Timeout ao acessar o site"));
-    });
-  });
-}
+        return res.status(500).json({
+            sucesso: false,
+            erro: "Erro ao consultar o jogador.",
+            detalhes: error.message
+        });
 
+    } finally {
+        if (page) {
+            try {
+                await page.close();
+            } catch (e) {}
+        }
+    }
+});
 
-/*
- * =========================================
- * CAPTCHA / BLOCK DETECTION
- * =========================================
- */
-
-function detectBlock(html = "") {
-  const text = html.toLowerCase();
-
-  const indicators = [
-    "captcha",
-    "cloudflare",
-    "checking your browser",
-    "verify you are human",
-    "just a moment",
-    "cf-chl",
-    "challenge-platform"
-  ];
-
-  return indicators.some(item => text.includes(item));
-}
-
-
-/*
- * =========================================
- * API
- * =========================================
- */
-
-module.exports = async (req, res) => {
-
-  /*
-   * CORS
-   */
-
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  if (req.method !== "GET") {
-    return res.status(405).json({
-      success: false,
-      error: "Método não permitido"
-    });
-  }
-
-  /*
-   * ID
-   */
-
-  const id =
-    req.query?.id ||
-    req.query?.playerId ||
-    req.query?.uid;
-
-  if (!id) {
-    return res.status(400).json({
-      success: false,
-      error: "Informe o ID do jogador"
-    });
-  }
-
-  /*
-   * Validação básica
-   */
-
-  if (!/^\d+$/.test(String(id))) {
-    return res.status(400).json({
-      success: false,
-      error: "ID inválido"
-    });
-  }
-
-  /*
-   * URL
-   */
-
-  const url =
-    `https://freefirejornal.com/perfil/${encodeURIComponent(id)}/`;
-
-  try {
-
-    /*
-     * Requisição normal
-     */
-
-    const response = await fetchHTML(url);
-
-    /*
-     * CAPTCHA / bloqueio
-     */
-
-    if (detectBlock(response.body)) {
-      return res.status(502).json({
-        success: false,
-        error: "O site retornou CAPTCHA ou bloqueio anti-bot"
-      });
+process.on("SIGINT", async () => {
+    if (browser) {
+        await browser.close();
     }
 
-    /*
-     * HTTP inválido
-     */
+    process.exit(0);
+});
 
-    if (response.status < 200 || response.status >= 400) {
-      return res.status(502).json({
-        success: false,
-        error: `O site respondeu HTTP ${response.status}`
-      });
-    }
-
-    /*
-     * Extrair dados
-     */
-
-    const data = extractProfile(response.body);
-
-    /*
-     * Verificação mínima
-     */
-
-    if (!data.nick && !data.avatar && data.level === null) {
-      return res.status(404).json({
-        success: false,
-        error: "Perfil não encontrado ou HTML alterado"
-      });
-    }
-
-    /*
-     * RESPOSTA FINAL
-     */
-
-    return res.status(200).json({
-      success: true,
-      data
-    });
-
-  } catch (error) {
-
-    console.error(error);
-
-    return res.status(500).json({
-      success: false,
-      error: "Erro ao consultar o perfil"
-    });
-  }
-};
+app.listen(PORT, () => {
+    console.log("");
+    console.log("====================================");
+    console.log(" API FF iniciada");
+    console.log("====================================");
+    console.log(`http://localhost:${PORT}/?id=8053399383`);
+    console.log("");
+});
